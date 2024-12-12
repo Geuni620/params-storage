@@ -1,4 +1,6 @@
-import { useState } from "react";
+// App.tsx
+import { useState, useEffect } from "react";
+import { useSearchState } from "./useSearchState";
 
 const sortOptions = [
   { value: "latest", label: "최신순" },
@@ -28,31 +30,86 @@ const statusOptions = [
   { value: "pending", label: "대기중" },
 ];
 
+const STORAGE_KEY = "search-params";
+
+// 디버깅을 위한 History 이벤트 패치
+const originalPushState = window.history.pushState;
+const originalReplaceState = window.history.replaceState;
+
+window.history.pushState = function () {
+  const result = originalPushState.apply(this, arguments);
+  window.dispatchEvent(new Event("pushstate"));
+  return result;
+};
+
+window.history.replaceState = function () {
+  const result = originalReplaceState.apply(this, arguments);
+  window.dispatchEvent(new Event("replacestate"));
+  return result;
+};
+
+function HistoryDebugger() {
+  const [historyLength, setHistoryLength] = useState(window.history.length);
+  const [currentIndex, setCurrentIndex] = useState(0);
+
+  useEffect(() => {
+    const handleNavigation = () => {
+      setHistoryLength(window.history.length);
+      setCurrentIndex(performance.navigation?.navigationType || 0);
+    };
+
+    window.addEventListener("popstate", handleNavigation);
+    window.addEventListener("pushstate", handleNavigation);
+    window.addEventListener("replacestate", handleNavigation);
+
+    return () => {
+      window.removeEventListener("popstate", handleNavigation);
+      window.removeEventListener("pushstate", handleNavigation);
+      window.removeEventListener("replacestate", handleNavigation);
+    };
+  }, []);
+
+  return (
+    <div className="fixed bottom-4 right-4 bg-white p-4 rounded-lg shadow-lg border border-gray-200">
+      <h3 className="font-bold mb-2">History Stack Debug</h3>
+      <div className="space-y-1 text-sm">
+        <p>Stack Size: {historyLength}</p>
+        <p>Current Position: {currentIndex}</p>
+        <p>Current State: {JSON.stringify(window.history.state, null, 2)}</p>
+      </div>
+    </div>
+  );
+}
+
 function App() {
-  const [searchFilters, setSearchFilters] = useState({
-    keyword: "",
-    category: "all",
-    dateRange: "all",
-    status: "all",
-    sortBy: "latest",
-  });
+  const [searchFilters, setSearchFilters, commitSearch] = useSearchState();
   const [searchResults, setSearchResults] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  const handleFilterChange = (filterName, value) => {
-    setSearchFilters((prev) => ({
-      ...prev,
+  const handleFilterChange = (filterName: string, value: string) => {
+    setSearchFilters({
       [filterName]: value,
-    }));
+    });
   };
 
-  const handleSearch = async (e) => {
+  // handleSearch 함수도 약간 수정 필요
+  const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
     setError(null);
 
     try {
+      // 실제 검색 버튼 클릭인 경우에만 history에 추가
+      if (!(e instanceof Event)) {
+        commitSearch();
+      }
+
+      console.log("History Stack:", {
+        length: window.history.length,
+        state: window.history.state,
+      });
+
       const response = await fetch("http://localhost:8000/search", {
         method: "POST",
         headers: {
@@ -69,25 +126,36 @@ function App() {
       setSearchResults(data.data.items);
     } catch (error) {
       console.error("Search error:", error);
-      setError(error.message);
+      setError(
+        error instanceof Error ? error.message : "검색 중 오류가 발생했습니다"
+      );
     } finally {
       setIsLoading(false);
     }
   };
 
   const resetFilters = () => {
-    setSearchFilters({
+    const resetState = {
       keyword: "",
       category: "all",
       dateRange: "all",
       status: "all",
       sortBy: "latest",
-    });
+    };
+
+    // 상태 초기화
+    setSearchFilters(resetState);
     setSearchResults([]);
+
+    // localStorage 초기화
+    localStorage.removeItem(STORAGE_KEY);
+
+    // history 초기화: 현재 페이지만 남기고 모두 제거
+    const currentPath = window.location.pathname;
+    window.history.pushState(null, "", currentPath);
   };
 
-  // 날짜 포맷팅 함수
-  const formatDate = (dateString) => {
+  const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleDateString("ko-KR", {
       year: "numeric",
       month: "long",
@@ -95,20 +163,27 @@ function App() {
     });
   };
 
-  // 가격 포맷팅 함수
-  const formatPrice = (price) => {
+  const formatPrice = (price: number) => {
     return price.toLocaleString("ko-KR", {
       style: "currency",
       currency: "KRW",
     });
   };
 
+  // 컴포넌트 마운트 시 localStorage 확인 후 조건부 검색
+  useEffect(() => {
+    const storedState = localStorage.getItem(STORAGE_KEY);
+    if (storedState) {
+      // localStorage에 저장된 검색 상태가 있는 경우에만 검색 실행
+      handleSearch(new Event("submit") as any);
+    }
+  }, []);
+
   return (
     <div className="p-6">
       <h1 className="text-2xl font-bold mb-6">상세 검색</h1>
 
       <form onSubmit={handleSearch} className="space-y-4">
-        {/* 기존 검색 폼 내용 */}
         <div className="flex gap-4">
           <input
             type="text"
@@ -183,7 +258,6 @@ function App() {
         </div>
       </form>
 
-      {/* 검색 결과 표시 */}
       <div className="mt-8">
         {isLoading && <div className="text-center py-4">검색 중...</div>}
 
@@ -195,7 +269,7 @@ function App() {
               검색 결과 ({searchResults.length}건)
             </h2>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {searchResults.map((item) => (
+              {searchResults.map((item: any) => (
                 <div
                   key={item.id}
                   className="border rounded-lg p-4 hover:shadow-lg transition-shadow"
@@ -235,6 +309,7 @@ function App() {
           </div>
         )}
       </div>
+      <HistoryDebugger />
     </div>
   );
 }
